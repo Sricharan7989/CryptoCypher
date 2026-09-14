@@ -78,10 +78,17 @@ async def trace_address(
     """
     Follow the money forward from a suspect wallet and return the flow graph.
 
-    Returns a flat `nodes` + `edges` pair (Cytoscape-ready) plus `hops` in the
-    order the walk made them. At this stage every node's `label` is null - the
-    tracer maps the money movement and makes no claim about who owns a wallet.
-    Exchange attribution is a separate step.
+    Returns a flat `nodes` + `edges` pair (Cytoscape-ready), `hops` in the order
+    the walk made them, and the attribution results:
+
+      summary       - the headline finding for the investigator panel.
+      attributions  - every recognised address, nearest hop first.
+      exchanges     - the actionable subset: VASPs that can be served a request.
+      flags         - mixers and bridges crossed on the way.
+
+    Confidence is never 1.0. `method` on every attribution says whether the name
+    came from a published label or from a behavioural pattern, because those
+    justify very different actions.
 
     max_depth is capped at 6 by the route, not by taste: out-degree compounds,
     so each extra hop multiplies both the graph size and the API calls.

@@ -1,5 +1,5 @@
 """
-The tracing engine — follows stolen funds forward, hop by hop, across Ethereum.
+The tracing engine — follows stolen funds forward until they reach a VASP.
 
 THE CORE INSIGHT THIS MODULE IMPLEMENTS
 ---------------------------------------
@@ -11,9 +11,10 @@ cannot hide: it is a large regulated business with a stable, recognisable
 on-chain fingerprint.
 
 So we do not try to identify the criminal. We follow the money THROUGH the
-anonymous wallets until it arrives somewhere we recognise. This module builds
-that trail. Naming the exchange at the end of it is a later step - the tracer
-deliberately stops at "here is the money flow" and makes no attribution claim.
+anonymous wallets until it arrives somewhere we recognise. This module walks
+that trail and calls identify.py at every wallet it meets; the moment a wallet
+is recognised as an exchange, that branch is finished - we have found the exit
+point, and that is the actionable answer.
 
 WHY WE FOLLOW OUTGOING EDGES
 ----------------------------
@@ -35,7 +36,12 @@ that. Each wallet also costs an API call against a 5-calls/sec free tier, so an
 uncapped trace does not merely get slow, it never finishes and gets the API key
 rate-limited on the way.
 
-Three limits keep this bounded, and each discards the LEAST informative work:
+Four limits keep this bounded, and each discards the LEAST informative work:
+  * identification  - stop the moment a branch reaches an exchange, mixer or
+                      bridge. This is the most valuable cap of the four: it
+                      ends branches exactly where the answer is, and it stops
+                      us from expanding the highest-degree wallets on the whole
+                      chain, which is what exchange hot wallets are.
   * max_depth       - laundering chains are short in practice; the exit point is
                       usually within a few hops, and everything past that is
                       noise anyway.
@@ -50,7 +56,7 @@ SCOPE (current stage)
 ---------------------
 Native ETH transfers only. ERC-20 movements (USDT, USDC) and internal contract
 transfers are NOT traced yet - a real laundering path often converts to a
-stablecoin, so this is the first gap to close after the trace works end to end.
+stablecoin, so this is the first gap to close.
 """
 
 import time
@@ -60,6 +66,7 @@ from dataclasses import dataclass, field
 import networkx as nx
 
 import config
+import identify
 from etherscan import EtherscanClient, Transfer, get_client, normalize_address
 
 
@@ -95,9 +102,42 @@ class Hop:
 
 
 @dataclass
+class Attribution:
+    """
+    A recognised endpoint: the answer the investigation is looking for.
+
+    `hop_distance` is the headline number - "funds reached Binance 3 hops away".
+    Because the walk is breadth-first, it is the SHORTEST path to that entity,
+    not an artefact of traversal order. `method` and `confidence` travel with it
+    so the claim can be weighed rather than taken on faith.
+    """
+
+    address: str
+    entity: str
+    entity_type: str  # exchange | suspected_exchange | mixer | bridge
+    method: str
+    confidence: float
+    hop_distance: int
+    evidence: str
+    value_received_eth: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "address": self.address,
+            "entity": self.entity,
+            "entity_type": self.entity_type,
+            "method": self.method,
+            "confidence": round(self.confidence, 2),
+            "hop_distance": self.hop_distance,
+            "evidence": self.evidence,
+            "value_received_eth": round(self.value_received_eth, 6),
+        }
+
+
+@dataclass
 class TraceResult:
     """
-    What a trace produced: the money-flow graph, plus the hops in the order walked.
+    What a trace produced: the money-flow graph, the hops, and the attributions.
 
     Unpacks like a tuple (`graph, hops = await trace(addr)`) and also carries the
     run statistics the UI shows and that tell us whether the caps were hit.
@@ -108,6 +148,7 @@ class TraceResult:
     start_address: str
     max_depth: int
     dust_threshold: float
+    attributions: list[Attribution] = field(default_factory=list)
     truncated: bool = False  # a cap stopped the walk early
     notes: list[str] = field(default_factory=list)
     api_calls: int = 0
@@ -118,6 +159,38 @@ class TraceResult:
         """So `graph, hops = result` works, as the engine's contract promises."""
         return iter((self.graph, self.hops))
 
+    @property
+    def exchanges(self) -> list[Attribution]:
+        """Attributions that are actually actionable - a VASP that can be served."""
+        return [
+            a for a in self.attributions
+            if a.entity_type in ("exchange", "suspected_exchange")
+        ]
+
+    @property
+    def flags(self) -> list[Attribution]:
+        """Obfuscation encountered on the way: mixers and cross-chain bridges."""
+        return [a for a in self.attributions if a.entity_type in ("mixer", "bridge")]
+
+
+def _mark_node(graph: nx.DiGraph, address: str, ident: identify.Identification) -> None:
+    """Write an identification onto the node so the frontend can style and label it."""
+    node = graph.nodes[address]
+    node["label"] = ident.entity
+    node["entity_type"] = ident.entity_type
+    node["method"] = ident.method
+    node["confidence"] = ident.confidence
+    node["is_vasp"] = ident.entity_type in ("exchange", "suspected_exchange")
+    node["is_mixer"] = ident.entity_type == "mixer"
+    node["is_bridge"] = ident.entity_type == "bridge"
+
+
+def _value_received(graph: nx.DiGraph, address: str) -> float:
+    """Total ETH that reached this address along traced edges."""
+    return sum(
+        data.get("value_eth", 0.0) for _, _, data in graph.in_edges(address, data=True)
+    )
+
 
 async def trace(
     start_address: str,
@@ -126,13 +199,20 @@ async def trace(
     client: EtherscanClient | None = None,
 ) -> TraceResult:
     """
-    Walk the money forward from `start_address` and return the flow graph.
+    Walk the money forward from `start_address` until it reaches a known entity.
 
     Breadth-first, not depth-first, and that choice is deliberate: BFS visits
     wallets in order of hop distance, so the first time we reach any wallet we
-    have reached it by the SHORTEST path. When the exchange-identification step
-    later reports "the funds reached Binance 3 hops away", BFS is what makes
-    that number true rather than an artefact of traversal order.
+    have reached it by the SHORTEST path. When the result says "the funds
+    reached Binance 3 hops away", BFS is what makes that number true rather than
+    an artefact of traversal order.
+
+    Identification runs at two moments, for a reason. A label lookup happens the
+    instant a wallet is discovered, since it depends only on the address. The
+    consolidation heuristic is re-checked when a wallet is about to be expanded,
+    and once more after the walk finishes, because fan-in is a property of the
+    graph and the graph is still growing - a wallet that looks ordinary when
+    first seen may turn out to be where six separate branches converge.
 
     Args:
         start_address: the suspect wallet the investigator was given.
@@ -141,9 +221,8 @@ async def trace(
         client: injectable Etherscan client, for tests and replay mode.
 
     Returns:
-        TraceResult - `.graph` (nodes = wallets, edges = aggregated flows) and
-        `.hops` (every edge in BFS order). Makes NO claim about who owns any
-        wallet; attribution is a separate, later step.
+        TraceResult - `.graph`, `.hops`, and `.attributions` (recognised
+        endpoints, nearest first). Confidence is never 1.0.
 
     Raises:
         ValueError: the start address is not a well-formed Ethereum address.
@@ -160,10 +239,37 @@ async def trace(
     graph = nx.DiGraph()
     hops: list[Hop] = []
     notes: list[str] = []
+    attributions: dict[str, Attribution] = {}  # keyed by address, first hit wins
     truncated = False
+
+    def record(address: str, ident: identify.Identification, depth: int) -> None:
+        """Mark the node and log the attribution, keeping the shortest hop distance."""
+        _mark_node(graph, address, ident)
+        if address in attributions:
+            return
+        attributions[address] = Attribution(
+            address=address,
+            entity=ident.entity,
+            entity_type=ident.entity_type,
+            method=ident.method,
+            confidence=ident.confidence,
+            hop_distance=depth,
+            evidence=ident.evidence,
+        )
 
     # depth = hops from the start address. The suspect wallet itself is depth 0.
     graph.add_node(start, depth=0, is_start=True)
+
+    # If the suspect address is ITSELF a known entity, that is worth reporting -
+    # but we still expand it. Stopping at depth 0 would return an empty graph
+    # and tell the investigator nothing about where the money went.
+    start_ident = identify.known_label_lookup(start)
+    if start_ident is not None:
+        record(start, start_ident, 0)
+        notes.append(
+            f"The start address is itself a known entity ({start_ident.entity}); "
+            f"tracing onward from it anyway."
+        )
 
     # `expanded` guards against refetching a wallet we have already walked out
     # of. Laundering paths loop and re-converge, so without this the walk can
@@ -188,6 +294,17 @@ async def trace(
                 f"(MAX_NODES_PER_TRACE). The graph is partial."
             )
             break
+
+        # Re-check before spending an API call. Fan-in may have matured since
+        # this wallet was queued, and if it is now recognisable the branch is
+        # already answered - expanding an exchange hot wallet would be both
+        # pointless and ruinously expensive.
+        if depth > 0:
+            ident = identify.identify(address, graph)
+            if ident is not None:
+                record(address, ident, depth)
+                if identify.is_terminal(ident):
+                    continue
 
         expanded.add(address)
 
@@ -243,8 +360,41 @@ async def trace(
                 )
             )
 
+            # Label lookup the moment the wallet is discovered - it needs only
+            # the address, so there is no reason to wait.
+            child_ident = identify.known_label_lookup(to_addr)
+            if child_ident is not None:
+                record(to_addr, child_ident, child_depth)
+                if identify.is_terminal(child_ident):
+                    # Branch complete: we found where this money came to rest.
+                    continue
+
             if to_addr not in expanded and child_depth < max_depth:
                 queue.append((to_addr, child_depth))
+
+    # Final consolidation sweep. Fan-in is only fully known once the walk is
+    # over, so a wallet where several branches converged may become recognisable
+    # here even though it looked ordinary every time we saw it mid-walk.
+    for address in list(graph.nodes):
+        if address in attributions or address == start:
+            continue
+        late = identify.consolidation_identify(address, graph)
+        if late is not None:
+            record(address, late, graph.nodes[address].get("depth", 0))
+            notes.append(
+                f"{address} was identified as a consolidation point only after "
+                f"the walk completed; its onward transfers were still followed."
+            )
+
+    # Attach how much value actually reached each identified endpoint.
+    for attribution in attributions.values():
+        attribution.value_received_eth = _value_received(graph, attribution.address)
+
+    # Nearest first, then most confident: the closest exit point is the one an
+    # investigator should act on.
+    ordered = sorted(
+        attributions.values(), key=lambda a: (a.hop_distance, -a.confidence)
+    )
 
     return TraceResult(
         graph=graph,
@@ -252,6 +402,7 @@ async def trace(
         start_address=start,
         max_depth=max_depth,
         dust_threshold=dust_threshold,
+        attributions=ordered,
         truncated=truncated,
         notes=notes,
         api_calls=client.api_calls,
@@ -299,6 +450,91 @@ def _aggregate_by_recipient(transfers: list[Transfer], dust_threshold: float) ->
     return flows
 
 
+def summarize(result: TraceResult) -> dict:
+    """
+    The headline finding, ready for the investigator-facing panel.
+
+    Reports the NEAREST exchange, because hop distance is the strongest
+    available proxy for how directly the suspect controlled the deposit. A
+    result is always honest about failure: if nothing was recognised, that is
+    stated plainly rather than dressed up as a weak hit.
+    """
+    # A NAMED exchange and a mere consolidation pattern are not interchangeable,
+    # and the headline must never blur them. Criminals consolidate too - they
+    # re-pool funds from their own split wallets, which produces exactly the
+    # fan-in signature an exchange deposit sweep produces. Method (b) cannot
+    # tell those apart, so a suspected hit is only ever reported as a lead.
+    confirmed = [a for a in result.exchanges if a.entity_type == "exchange"]
+    suspected = [a for a in result.exchanges if a.entity_type == "suspected_exchange"]
+    exchanges = confirmed
+    flags = result.flags
+
+    if not confirmed and suspected:
+        lead = suspected[0]
+        return {
+            "found": False,
+            "lead": True,
+            "headline": (
+                f"No named exchange reached within {result.max_depth} hops. "
+                f"One collection point found {lead.hop_distance} hops away "
+                f"({lead.confidence * 100:.0f}% confidence) - UNCONFIRMED."
+            ),
+            "address": lead.address,
+            "hop_distance": lead.hop_distance,
+            "confidence": round(lead.confidence, 2),
+            "method": lead.method,
+            "value_received_eth": round(lead.value_received_eth, 6),
+            "recommended_action": (
+                f"Do NOT treat {lead.address} as an exchange yet. Many wallets "
+                f"funnel into it, but a criminal re-pooling their own split "
+                f"funds produces the same pattern. Verify it independently "
+                f"(Etherscan labels, outgoing transaction count) before any "
+                f"lawful request is raised."
+            ),
+            "mixers_or_bridges_crossed": [f.entity for f in flags],
+        }
+
+    if not exchanges:
+        return {
+            "found": False,
+            "lead": False,
+            "headline": (
+                "No known exchange reached within "
+                f"{result.max_depth} hops of {result.start_address[:10]}..."
+            ),
+            "recommended_action": (
+                "Widen the trace depth, or expand labels.json. Funds may still "
+                "be sitting in unhosted wallets or have moved via ERC-20 "
+                "tokens, which this build does not yet follow."
+            ),
+            "mixers_or_bridges_crossed": [f.entity for f in flags],
+        }
+
+    nearest = exchanges[0]
+    return {
+        "found": True,
+        "lead": False,
+        "exchange": nearest.entity,
+        "address": nearest.address,
+        "hop_distance": nearest.hop_distance,
+        "confidence": round(nearest.confidence, 2),
+        "method": nearest.method,
+        "value_received_eth": round(nearest.value_received_eth, 6),
+        "headline": (
+            f"Funds reached {nearest.entity}, {nearest.hop_distance} "
+            f"hop{'s' if nearest.hop_distance != 1 else ''} away, "
+            f"{nearest.confidence * 100:.0f}% confidence"
+        ),
+        "recommended_action": (
+            f"Serve a lawful data request to {nearest.entity} via SAHYOG for "
+            f"KYC records on deposits to {nearest.address}."
+        ),
+        "mixers_or_bridges_crossed": [f.entity for f in flags],
+        "other_exchanges_reached": [a.entity for a in exchanges[1:]],
+        "unconfirmed_collection_points": [a.address for a in suspected],
+    }
+
+
 def to_json(result: TraceResult) -> dict:
     """
     Flatten a TraceResult into the frontend's JSON shape.
@@ -311,9 +547,13 @@ def to_json(result: TraceResult) -> dict:
             "id": address,
             "depth": data.get("depth", 0),
             "is_start": data.get("is_start", False),
-            # Populated by the exchange-identification step, not by the tracer.
-            "label": None,
-            "entity_type": None,
+            "label": data.get("label"),
+            "entity_type": data.get("entity_type"),
+            "is_vasp": data.get("is_vasp", False),
+            "is_mixer": data.get("is_mixer", False),
+            "is_bridge": data.get("is_bridge", False),
+            "confidence": data.get("confidence"),
+            "method": data.get("method"),
         }
         for address, data in result.graph.nodes(data=True)
     ]
@@ -339,13 +579,17 @@ def to_json(result: TraceResult) -> dict:
             "max_depth": result.max_depth,
             "dust_threshold_eth": result.dust_threshold,
         },
+        "summary": summarize(result),
+        "attributions": [a.to_dict() for a in result.attributions],
+        "exchanges": [a.to_dict() for a in result.exchanges],
+        "flags": [a.to_dict() for a in result.flags],
         "stats": {
             "nodes": result.graph.number_of_nodes(),
             "edges": result.graph.number_of_edges(),
             "hops": len(result.hops),
-            "max_depth_reached": max(
-                (n["depth"] for n in nodes), default=0
-            ),
+            "max_depth_reached": max((n["depth"] for n in nodes), default=0),
+            "identified": len(result.attributions),
+            "labels_loaded": identify.label_count(),
             "api_calls": result.api_calls,
             "cache_hits": result.cache_hits,
             "elapsed_sec": result.elapsed_sec,

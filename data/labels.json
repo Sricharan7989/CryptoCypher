@@ -1,1 +1,73 @@
-{}
+{
+  "_comment": [
+    "Address -> entity map. This is the ground truth for identification method (a),",
+    "the known-label lookup, and it is why the tool can name an exchange at all.",
+    "",
+    "WHY these addresses are knowable: an exchange cannot hide its hot wallets.",
+    "It must publish deposit addresses to millions of users and settle enormous",
+    "volume through a small number of wallets, so its on-chain fingerprint is",
+    "large, stable and public. That is the asymmetry the whole tool rests on -",
+    "the criminal's fresh wallets are anonymous, but the exit point is not.",
+    "",
+    "STARTER SET ONLY (~28 entries). Seeded by hand from Etherscan's public label",
+    "cloud and widely-published incident reporting. Expand later from:",
+    "  - GraphSense TagPacks (https://github.com/graphsense/graphsense-tagpacks)",
+    "  - Etherscan public label cloud (https://etherscan.io/labelcloud)",
+    "  - OFAC SDN crypto address list (sanctions flags)",
+    "Indian VASPs (WazirX, CoinDCX, ZebPay) are deliberately ABSENT rather than",
+    "guessed - they matter most for the SAHYOG workflow, so they should be added",
+    "from a verified TagPack rather than from memory.",
+    "",
+    "Keys must be lowercase. 'type' is one of: exchange | mixer | bridge.",
+    "Every underscore-prefixed key is ignored by the loader.",
+    "",
+    "VERIFIED: every address below was checked on-chain (nonce / contract code /",
+    "balance) and shows activity consistent with its label. Re-run that check",
+    "after adding entries - a wrong address here silently produces a confident",
+    "and completely false attribution, which is the worst failure this tool has."
+  ],
+
+  "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be": {"entity": "Binance", "type": "exchange"},
+  "0xd551234ae421e3bcba99a0da6d736074f22192ff": {"entity": "Binance", "type": "exchange"},
+  "0x564286362092d8e7936f0549571a803b203aaced": {"entity": "Binance", "type": "exchange"},
+  "0x0681d8db095565fe8a346fa0277bffde9c0edbbf": {"entity": "Binance", "type": "exchange"},
+  "0x28c6c06298d514db089934071355e5743bf21d60": {"entity": "Binance", "type": "exchange"},
+  "0x21a31ee1afc51d94c2efccaa2092ad1028285549": {"entity": "Binance", "type": "exchange"},
+  "0xdfd5293d8e347dfe59e90efd55b2956a1343963d": {"entity": "Binance", "type": "exchange"},
+  "0x56eddb7aa87536c09ccc2793473599fd21a8b17f": {"entity": "Binance", "type": "exchange"},
+  "0x9696f59e4d72e237be84ffd425dcad154bf96976": {"entity": "Binance", "type": "exchange"},
+
+  "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": {"entity": "Coinbase", "type": "exchange"},
+  "0x503828976d22510aad0201ac7ec88293211d23da": {"entity": "Coinbase", "type": "exchange"},
+  "0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740": {"entity": "Coinbase", "type": "exchange"},
+  "0x3cd751e6b0078be393132286c442345e5dc49699": {"entity": "Coinbase", "type": "exchange"},
+  "0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43": {"entity": "Coinbase", "type": "exchange"},
+
+  "0x2910543af39aba0cd09dbb2d50200b3e800a63d2": {"entity": "Kraken", "type": "exchange"},
+  "0x0a869d79a7052c7f1b55a8ebabbea3420f0d1e13": {"entity": "Kraken", "type": "exchange"},
+  "0xe853c56864a2ebe4576a807d26fdc4a0ada51919": {"entity": "Kraken", "type": "exchange"},
+  "0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0": {"entity": "Kraken", "type": "exchange"},
+
+  "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b": {"entity": "OKX", "type": "exchange"},
+  "0x236f9f97e0e62388479bf9e5ba4889e46b0273c3": {"entity": "OKX", "type": "exchange"},
+  "0xa7efae728d2936e78bda97dc267687568dd593f3": {"entity": "OKX", "type": "exchange"},
+
+  "0x1151314c646ce4e0efd76d1af4760ae66a9fe30f": {"entity": "Bitfinex", "type": "exchange"},
+  "0x876eabf441b2ee5b5b0554fd502a8e0600950cfa": {"entity": "Bitfinex", "type": "exchange"},
+
+  "0xab5c66752a9e8167967685f1450532fb96d5d24f": {"entity": "Huobi", "type": "exchange"},
+  "0x689c56aef474df92d44a1b70850f808488f9769c": {"entity": "KuCoin", "type": "exchange"},
+  "0x6262998ced04146fa42253a5c0af90ca02dfd2a3": {"entity": "Crypto.com", "type": "exchange"},
+  "0xd24400ae8bfebb18ca49be86258a3c749cf46853": {"entity": "Gemini", "type": "exchange"},
+
+  "0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc": {"entity": "Tornado Cash (0.1 ETH pool)", "type": "mixer"},
+  "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936": {"entity": "Tornado Cash (1 ETH pool)", "type": "mixer"},
+  "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf": {"entity": "Tornado Cash (10 ETH pool)", "type": "mixer"},
+  "0xa160cdab225685da1d56aa342ad8841c3b53f291": {"entity": "Tornado Cash (100 ETH pool)", "type": "mixer"},
+  "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b": {"entity": "Tornado Cash Router", "type": "mixer"},
+  "0x722122df12d4e14e13ac3b6895a86e84145b6967": {"entity": "Tornado Cash Proxy", "type": "mixer"},
+
+  "0xa0c68c638235ee32657e8f720a23cec1bfc77c77": {"entity": "Polygon Bridge", "type": "bridge"},
+  "0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a": {"entity": "Arbitrum Bridge", "type": "bridge"},
+  "0x99c9fc46f92e8a1c0dec1b1747d010903e884be1": {"entity": "Optimism Gateway", "type": "bridge"}
+}
