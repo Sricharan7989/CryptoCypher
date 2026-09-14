@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+networkx
+pydantic
+python-dotenv
+reportlab
