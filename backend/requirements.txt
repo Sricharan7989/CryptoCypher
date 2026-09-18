@@ -5,3 +5,5 @@ networkx
 pydantic
 python-dotenv
 reportlab
+pyyaml
+neo4j

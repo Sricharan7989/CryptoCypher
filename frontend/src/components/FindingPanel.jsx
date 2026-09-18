@@ -6,6 +6,7 @@
 // certain it is, and offer the next lawful step.
 
 import { useState } from 'react'
+import { reportUrl } from '../api.js'
 import {
   ETHERSCAN,
   describeMethod,
@@ -16,20 +17,61 @@ import {
   shortAddress,
 } from '../trace-path.js'
 
-function ConfidenceBar({ value }) {
-  const pct = Math.round((value ?? 0) * 100)
-  // Confidence is never presented as certainty. The band names are deliberately
-  // cautious, because this output can justify a legal request against a person.
+// The score is a weighted sum the backend can account for line by line. The
+// panel therefore never shows it as a bare number: the arithmetic is one click
+// away, because a figure that can justify a legal request has to be
+// challengeable by whoever reads it.
+function ConfidenceBar({ summary }) {
+  const [open, setOpen] = useState(false)
+  const pct = summary.confidence_score ?? Math.round((summary.confidence ?? 0) * 100)
+  const components = summary.confidence_components ?? []
   const band = pct >= 85 ? 'high' : pct >= 60 ? 'moderate' : 'low'
+
   return (
     <div className="confidence">
       <div className="confidence-head">
         <span className={`confidence-value conf-${band}`}>{pct}%</span>
         <span className="confidence-label">confidence · {band}</span>
+        {components.length > 0 && (
+          <button
+            type="button"
+            className="why"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            title={summary.confidence_breakdown}
+          >
+            {open ? 'Hide reasoning' : 'Why this score?'}
+          </button>
+        )}
       </div>
+
       <div className="confidence-track">
         <div className={`confidence-fill conf-${band}`} style={{ width: `${pct}%` }} />
       </div>
+
+      {open && (
+        <div className="score-detail">
+          <table className="score-table">
+            <tbody>
+              {components.map((c) => (
+                <tr key={c.label}>
+                  <td>{c.label}</td>
+                  <td className={c.points < 0 ? 'pts pts-neg' : 'pts pts-pos'}>
+                    {c.points > 0 ? `+${c.points}` : c.points}
+                  </td>
+                </tr>
+              ))}
+              <tr className="score-total">
+                <td>Confidence</td>
+                <td className="pts">{pct}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="score-note">
+            Scores are capped at 95. Certainty is never claimed.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -108,32 +150,78 @@ function TracedPath({ data, targetAddress }) {
   )
 }
 
-function Flags({ flags, onPath }) {
+// Risk flags come from the backend already sorted worst-first, with the ones
+// sitting on the actual money trail ahead of those on side branches - a mixer
+// the funds went through means something quite different from one they didn't.
+function RiskFlags({ flags }) {
   if (!flags || flags.length === 0) return null
+
+  const onPath = flags.filter((f) => f.on_primary_path)
+  const elsewhere = flags.filter((f) => !f.on_primary_path)
+
+  const render = (flag) => (
+    <li key={flag.address} className={`flag sev-${flag.severity}`}>
+      <span className="flag-icon" aria-hidden="true">!</span>
+      <div>
+        <div className="flag-name">
+          {flag.entity}
+          <span className="flag-sev">{flag.severity}</span>
+          {flag.on_primary_path && <span className="flag-tag">on this path</span>}
+        </div>
+        <div className="flag-note">{flag.note}</div>
+        <div className="flag-meta">
+          {formatEth(flag.value_received_eth)} · hop {flag.hop_distance} ·{' '}
+          <AddressLink address={flag.address} />
+        </div>
+      </div>
+    </li>
+  )
+
   return (
     <section className="block">
-      <h3>Obfuscation encountered</h3>
-      <ul className="flags">
-        {flags.map((flag) => (
-          <li key={flag.address} className="flag">
-            <span className="flag-icon" aria-hidden="true">!</span>
-            <div>
-              <div className="flag-name">
-                {flag.entity}
-                {onPath.has(flag.address) && (
-                  <span className="flag-tag">on this path</span>
-                )}
-              </div>
-              <div className="flag-note">
-                {flag.entity_type === 'mixer'
-                  ? `${formatEth(flag.value_received_eth)} entered a mixing service. Funds sent through a mixer cannot be followed further on-chain.`
-                  : `${formatEth(flag.value_received_eth)} moved to another blockchain through a bridge. The trail continues outside Ethereum.`}
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
+      <h3>Risk flags</h3>
+      {onPath.length > 0 && <ul className="flags">{onPath.map(render)}</ul>}
+      {elsewhere.length > 0 && (
+        <>
+          <p className="flags-sub">
+            Elsewhere in the trace, not on the route to this finding:
+          </p>
+          <ul className="flags flags-muted">{elsewhere.map(render)}</ul>
+        </>
+      )}
     </section>
+  )
+}
+
+// The PDF is offered on every outcome, including "nothing found" - a negative
+// result is still a result an investigator may need to file and justify.
+function ReportActions({ data }) {
+  return (
+    <section className="block">
+      <h3>Report</h3>
+      <a
+        className="download"
+        href={reportUrl(data.start_address, { maxDepth: data.params.max_depth })}
+        target="_blank"
+        rel="noreferrer"
+      >
+        Download PDF report
+      </a>
+      <p className="action-note">
+        Includes the traced path with transaction hashes, the confidence
+        breakdown, risk flags and the basis-and-limitations statement.
+      </p>
+    </section>
+  )
+}
+
+function SourceBadge({ data }) {
+  if (data.source !== 'cache') return null
+  return (
+    <div className="source-badge" title={`Recorded ${data.recorded_at}`}>
+      Replayed from a recorded trace
+      {data.recorded_at ? ` · captured ${data.recorded_at.slice(0, 16).replace('T', ' ')} UTC` : ''}
+    </div>
   )
 }
 
@@ -195,9 +283,6 @@ export default function FindingPanel({ data, loading, error, onToast }) {
 
   const summary = data.summary ?? {}
   const target = summary.address ?? null
-  const path = target ? findPath(data.edges, data.start_address, target) : []
-  const onPath = new Set(pathAddresses(path, data.start_address))
-
   const handleRoute = () => {
     setRouted(true)
     onToast(
@@ -211,6 +296,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
     return (
       <aside className="panel">
         <header className="finding-head none">
+          <SourceBadge data={data} />
           <div className="eyebrow">Finding</div>
           <h2 className="finding-none">No exchange reached</h2>
           <p className="finding-sub">
@@ -219,11 +305,12 @@ export default function FindingPanel({ data, loading, error, onToast }) {
           </p>
         </header>
         <div className="panel-body">
-          <Flags flags={data.flags} onPath={onPath} />
+          <RiskFlags flags={data.risk_flags} />
           <section className="block">
             <h3>What to do next</h3>
             <p className="muted">{summary.recommended_action}</p>
           </section>
+          <ReportActions data={data} />
         </div>
       </aside>
     )
@@ -234,6 +321,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
     return (
       <aside className="panel">
         <header className="finding-head lead">
+          <SourceBadge data={data} />
           <div className="eyebrow">Finding · unconfirmed</div>
           <h2 className="finding-title">
             A collection point was found {summary.hop_distance} hop
@@ -243,7 +331,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
             This is a lead, not an identified exchange. It has not been named and
             must be verified before any request is raised.
           </p>
-          <ConfidenceBar value={summary.confidence} />
+          <ConfidenceBar summary={summary} />
         </header>
 
         <div className="panel-body">
@@ -253,7 +341,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
           </section>
 
           <MethodNote method={summary.method} />
-          <Flags flags={data.flags} onPath={onPath} />
+          <RiskFlags flags={data.risk_flags} />
 
           <section className="block">
             <h3>Recommended action</h3>
@@ -261,6 +349,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
               <p>{summary.recommended_action}</p>
             </div>
           </section>
+          <ReportActions data={data} />
         </div>
       </aside>
     )
@@ -270,6 +359,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
   return (
     <aside className="panel">
       <header className="finding-head found">
+        <SourceBadge data={data} />
         <div className="eyebrow">Finding</div>
         <h2 className="finding-title">
           Funds reached <strong>{summary.exchange}</strong>
@@ -277,7 +367,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
             {summary.hop_distance} hop{summary.hop_distance === 1 ? '' : 's'} away
           </span>
         </h2>
-        <ConfidenceBar value={summary.confidence} />
+        <ConfidenceBar summary={summary} />
         <div className="finding-amount">
           {formatEth(summary.value_received_eth)} traced into this exchange
         </div>
@@ -290,7 +380,7 @@ export default function FindingPanel({ data, loading, error, onToast }) {
         </section>
 
         <MethodNote method={summary.method} />
-        <Flags flags={data.flags} onPath={onPath} />
+        <RiskFlags flags={data.risk_flags} />
 
         {summary.other_exchanges_reached?.length > 0 && (
           <section className="block">
@@ -323,6 +413,8 @@ export default function FindingPanel({ data, loading, error, onToast }) {
             </p>
           </div>
         </section>
+
+        <ReportActions data={data} />
       </div>
     </aside>
   )

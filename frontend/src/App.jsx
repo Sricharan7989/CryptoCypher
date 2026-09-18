@@ -1,11 +1,7 @@
-import { useState } from 'react'
-import { runTrace } from './api.js'
+import { useEffect, useState } from 'react'
+import { listDemos, runTrace } from './api.js'
 import FindingPanel from './components/FindingPanel.jsx'
 import TraceGraph from './components/TraceGraph.jsx'
-
-// A real address with a clean, fast result - useful for a first run and for the
-// demo, where waiting on a cold trace of a busy wallet is a bad look.
-const SAMPLE = '0x62425cd6bdcb6bfe51558ea465b063486b70dc9f'
 
 function Toast({ message, onDismiss }) {
   if (!message) return null
@@ -24,27 +20,43 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [toast, setToast] = useState(null)
+  const [demos, setDemos] = useState([])
+  // Live mode forces a fresh trace even for an address that has a recording.
+  // Off by default so the demo is fast and cannot be broken by the network.
+  const [forceLive, setForceLive] = useState(false)
+
+  useEffect(() => {
+    listDemos().then(setDemos)
+  }, [])
 
   const showToast = (message) => {
     setToast(message)
     setTimeout(() => setToast(null), 5000)
   }
 
-  const submit = async (event) => {
-    event.preventDefault()
-    const target = address.trim()
+  const trace = async (target, { depth: useDepth = depth, live = forceLive } = {}) => {
     if (!target) return
-
     setLoading(true)
     setError(null)
     setData(null)
     try {
-      setData(await runTrace(target, { maxDepth: depth }))
+      setData(await runTrace(target, { maxDepth: useDepth, mode: live ? 'live' : 'auto' }))
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
+  }
+
+  const submit = (event) => {
+    event.preventDefault()
+    trace(address.trim())
+  }
+
+  const runDemo = (demo) => {
+    setAddress(demo.address)
+    setForceLive(false)
+    trace(demo.address, { live: false })
   }
 
   return (
@@ -79,16 +91,38 @@ export default function App() {
           <button type="submit" disabled={loading || !address.trim()}>
             {loading ? 'Tracing…' : 'Trace funds'}
           </button>
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => setAddress(SAMPLE)}
-            disabled={loading}
-          >
-            Use sample
-          </button>
+          <label className="live-toggle" title="Ignore recorded traces and query the chain now">
+            <input
+              type="checkbox"
+              checked={forceLive}
+              onChange={(e) => setForceLive(e.target.checked)}
+              disabled={loading}
+            />
+            Force live
+          </label>
         </form>
       </header>
+
+      {demos.length > 0 && (
+        <div className="demobar">
+          <span className="demobar-label">Recorded demos — replay instantly:</span>
+          {demos.map((demo) => (
+            <button
+              key={demo.address}
+              type="button"
+              className="demo-chip"
+              onClick={() => runDemo(demo)}
+              disabled={loading}
+              title={demo.headline}
+            >
+              {demo.exchange
+                ? `${demo.exchange} · ${demo.hop_distance} hops`
+                : 'Unresolved trail'}
+              <span className="demo-addr">{demo.address.slice(0, 10)}…</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <main className="workspace">
         <section className="graph-column">

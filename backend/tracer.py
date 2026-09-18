@@ -66,7 +66,9 @@ from dataclasses import dataclass, field
 import networkx as nx
 
 import config
+import graph_store
 import identify
+import scoring
 from etherscan import EtherscanClient, Transfer, get_client, normalize_address
 
 
@@ -121,6 +123,16 @@ class Attribution:
     evidence: str
     value_received_eth: float = 0.0
 
+    # The shortest route from the suspect wallet to this address, and the label
+    # types crossed along it. Both are filled in after the walk, because a path
+    # is only knowable once the graph is complete. scoring.compute_confidence
+    # reads `path_risk_types` to apply the mixer and bridge penalties.
+    path: list[str] = field(default_factory=list)
+    path_risk_types: set[str] = field(default_factory=set)
+    confidence_score: int = 0  # 0-100, from scoring.py
+    confidence_breakdown: str = ""
+    confidence_components: list[dict] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "address": self.address,
@@ -128,9 +140,46 @@ class Attribution:
             "entity_type": self.entity_type,
             "method": self.method,
             "confidence": round(self.confidence, 2),
+            "confidence_score": self.confidence_score,
+            "confidence_breakdown": self.confidence_breakdown,
+            "confidence_components": self.confidence_components,
             "hop_distance": self.hop_distance,
             "evidence": self.evidence,
             "value_received_eth": round(self.value_received_eth, 6),
+            "path": self.path,
+            "crossed": sorted(self.path_risk_types),
+        }
+
+
+@dataclass
+class RiskFlag:
+    """
+    A wallet on the money trail that carries a risk of its own.
+
+    Distinct from an Attribution: an attribution answers "whose wallet is this",
+    a risk flag answers "what is wrong with this wallet being on the path". A
+    mixer is both - the exchange search stops there, AND it is a red flag.
+    """
+
+    address: str
+    entity: str
+    risk_type: str  # mixer | bridge | scam | sanctioned
+    severity: str  # critical | high | medium
+    hop_distance: int
+    on_primary_path: bool
+    value_received_eth: float
+    note: str
+
+    def to_dict(self) -> dict:
+        return {
+            "address": self.address,
+            "entity": self.entity,
+            "risk_type": self.risk_type,
+            "severity": self.severity,
+            "hop_distance": self.hop_distance,
+            "on_primary_path": self.on_primary_path,
+            "value_received_eth": round(self.value_received_eth, 6),
+            "note": self.note,
         }
 
 
@@ -149,11 +198,13 @@ class TraceResult:
     max_depth: int
     dust_threshold: float
     attributions: list[Attribution] = field(default_factory=list)
+    risk_flags: list[RiskFlag] = field(default_factory=list)
     truncated: bool = False  # a cap stopped the walk early
     notes: list[str] = field(default_factory=list)
     api_calls: int = 0
     cache_hits: int = 0
     elapsed_sec: float = 0.0
+    backend: str = "memory"  # which graph store served this trace
 
     def __iter__(self):
         """So `graph, hops = result` works, as the engine's contract promises."""
@@ -173,23 +224,23 @@ class TraceResult:
         return [a for a in self.attributions if a.entity_type in ("mixer", "bridge")]
 
 
-def _mark_node(graph: nx.DiGraph, address: str, ident: identify.Identification) -> None:
-    """Write an identification onto the node so the frontend can style and label it."""
-    node = graph.nodes[address]
-    node["label"] = ident.entity
-    node["entity_type"] = ident.entity_type
-    node["method"] = ident.method
-    node["confidence"] = ident.confidence
-    node["is_vasp"] = ident.entity_type in ("exchange", "suspected_exchange")
-    node["is_mixer"] = ident.entity_type == "mixer"
-    node["is_bridge"] = ident.entity_type == "bridge"
-
-
-def _value_received(graph: nx.DiGraph, address: str) -> float:
-    """Total ETH that reached this address along traced edges."""
-    return sum(
-        data.get("value_eth", 0.0) for _, _, data in graph.in_edges(address, data=True)
+def _mark_node(store, address: str, ident: identify.Identification) -> None:
+    """Write an identification onto the wallet so the frontend can style and label it."""
+    store.update_wallet(
+        address,
+        label=ident.entity,
+        entity_type=ident.entity_type,
+        method=ident.method,
+        confidence=ident.confidence,
+        is_vasp=ident.entity_type in ("exchange", "suspected_exchange"),
+        is_mixer=ident.entity_type == "mixer",
+        is_bridge=ident.entity_type == "bridge",
     )
+
+
+def _value_received(store, address: str) -> float:
+    """Total ETH that reached this address along traced edges."""
+    return sum(edge.get("value_eth", 0.0) for edge in store.incoming(address))
 
 
 async def trace(
@@ -236,15 +287,15 @@ async def trace(
     if len(start) != 42 or not start.startswith("0x"):
         raise ValueError(f"Not a valid Ethereum address: {start_address!r}")
 
-    graph = nx.DiGraph()
+    store = graph_store.get_store()
     hops: list[Hop] = []
     notes: list[str] = []
     attributions: dict[str, Attribution] = {}  # keyed by address, first hit wins
     truncated = False
 
     def record(address: str, ident: identify.Identification, depth: int) -> None:
-        """Mark the node and log the attribution, keeping the shortest hop distance."""
-        _mark_node(graph, address, ident)
+        """Mark the wallet and log the attribution, keeping the shortest hop distance."""
+        _mark_node(store, address, ident)
         if address in attributions:
             return
         attributions[address] = Attribution(
@@ -258,7 +309,7 @@ async def trace(
         )
 
     # depth = hops from the start address. The suspect wallet itself is depth 0.
-    graph.add_node(start, depth=0, is_start=True)
+    store.add_wallet(start, depth=0, is_start=True)
 
     # If the suspect address is ITSELF a known entity, that is worth reporting -
     # but we still expand it. Stopping at depth 0 would return an empty graph
@@ -287,7 +338,7 @@ async def trace(
         # where its money went next. This is the boundary of the trace.
         if depth >= max_depth:
             continue
-        if len(graph) >= config.MAX_NODES_PER_TRACE:
+        if store.wallet_count() >= config.MAX_NODES_PER_TRACE:
             truncated = True
             notes.append(
                 f"Stopped expanding at {config.MAX_NODES_PER_TRACE} wallets "
@@ -300,7 +351,7 @@ async def trace(
         # already answered - expanding an exchange hot wallet would be both
         # pointless and ruinously expensive.
         if depth > 0:
-            ident = identify.identify(address, graph)
+            ident = identify.identify(address, store)
             if ident is not None:
                 record(address, ident, depth)
                 if identify.is_terminal(ident):
@@ -335,10 +386,10 @@ async def trace(
         for flow in ranked:
             to_addr = flow["to"]
 
-            if to_addr not in graph:
-                graph.add_node(to_addr, depth=child_depth, is_start=False)
+            if not store.has(to_addr):
+                store.add_wallet(to_addr, depth=child_depth, is_start=False)
 
-            graph.add_edge(
+            store.add_transfer(
                 address,
                 to_addr,
                 value_eth=flow["value_eth"],
@@ -375,12 +426,12 @@ async def trace(
     # Final consolidation sweep. Fan-in is only fully known once the walk is
     # over, so a wallet where several branches converged may become recognisable
     # here even though it looked ordinary every time we saw it mid-walk.
-    for address in list(graph.nodes):
+    for address, data in store.wallets():
         if address in attributions or address == start:
             continue
-        late = identify.consolidation_identify(address, graph)
+        late = identify.consolidation_identify(address, store)
         if late is not None:
-            record(address, late, graph.nodes[address].get("depth", 0))
+            record(address, late, data.get("depth", 0))
             notes.append(
                 f"{address} was identified as a consolidation point only after "
                 f"the walk completed; its onward transfers were still followed."
@@ -388,13 +439,36 @@ async def trace(
 
     # Attach how much value actually reached each identified endpoint.
     for attribution in attributions.values():
-        attribution.value_received_eth = _value_received(graph, attribution.address)
+        attribution.value_received_eth = _value_received(store, attribution.address)
+
+    # Reconstruct each attribution's route and score it. This has to happen
+    # after the walk: a path is only knowable once the graph is complete, and
+    # the score depends on what that path crossed.
+    for attribution in attributions.values():
+        attribution.path = store.shortest_path(start, attribution.address)
+        attribution.path_risk_types = _risk_types_on_path(store, attribution.path)
+
+        scored = scoring.compute_confidence(attribution)
+        attribution.confidence_score = scored.score
+        attribution.confidence_breakdown = scored.breakdown
+        attribution.confidence_components = [c.to_dict() for c in scored.components]
+        # Keep the 0-1 field in step so every existing consumer stays correct.
+        attribution.confidence = scored.score / 100.0
 
     # Nearest first, then most confident: the closest exit point is the one an
     # investigator should act on.
     ordered = sorted(
         attributions.values(), key=lambda a: (a.hop_distance, -a.confidence)
     )
+
+    risk_flags = _collect_risk_flags(store, start, ordered)
+
+    # Materialise a NetworkX view for serialisation and for everything that
+    # already speaks DiGraph. With Neo4j this is one query at the end of the
+    # walk, not a second traversal engine running alongside the first.
+    graph = store.to_networkx()
+    backend = store.backend
+    store.close()
 
     return TraceResult(
         graph=graph,
@@ -403,12 +477,100 @@ async def trace(
         max_depth=max_depth,
         dust_threshold=dust_threshold,
         attributions=ordered,
+        risk_flags=risk_flags,
         truncated=truncated,
         notes=notes,
         api_calls=client.api_calls,
         cache_hits=client.cache_hits,
         elapsed_sec=round(time.monotonic() - started_at, 2),
+        backend=backend,
     )
+
+
+def _risk_types_on_path(store, path: list[str]) -> set[str]:
+    """
+    Which risky label types the money crossed on the way to the endpoint.
+
+    The endpoint itself is excluded: we are scoring how trustworthy the route TO
+    it is, and a mixer should not be penalised for being a mixer. Its own
+    intermediate hops still count.
+    """
+    crossed: set[str] = set()
+    for address in path[:-1]:
+        entity_type = store.wallet(address).get("entity_type")
+        if scoring.risk_severity(entity_type or "") is not None:
+            crossed.add(entity_type)
+    return crossed
+
+
+def _primary_attribution(attributions: list[Attribution]) -> Attribution | None:
+    """
+    The one finding the report is actually about - the headline.
+
+    NOT simply the first attribution. Attributions are ordered by hop distance,
+    so a mixer one hop out sorts ahead of the exchange three hops out, but the
+    exchange is the finding; the mixer is something the money passed on the way.
+    Picking the wrong one here would make "on this path" contradict the path the
+    panel draws, so this deliberately mirrors what summarize() reports: a named
+    exchange first, an unconfirmed collection point only if there is no named
+    one, and nothing at all if neither exists.
+    """
+    for wanted in ("exchange", "suspected_exchange"):
+        for attribution in attributions:
+            if attribution.entity_type == wanted:
+                return attribution
+
+    # No exchange anywhere: the trail ended at a mixer or a bridge. That IS the
+    # story of this trace, so the nearest such endpoint becomes the primary
+    # path - otherwise a mixer sitting directly on the money's route would be
+    # reported as though it were off to one side.
+    return attributions[0] if attributions else None
+
+
+def _collect_risk_flags(store, start: str, attributions: list[Attribution]) -> list[RiskFlag]:
+    """
+    Every labelled wallet in the trace that is a risk in its own right.
+
+    Covers mixers, bridges and - when such entries exist in labels.json - scam
+    and sanctioned addresses. Each flag records whether it sits on the primary
+    path (the route to the headline finding) or elsewhere in the graph, because
+    a mixer on the actual trail means something quite different from one on a
+    side branch the money never took.
+    """
+    primary = _primary_attribution(attributions)
+    primary_path = set(primary.path) if primary is not None else set()
+
+    flags: list[RiskFlag] = []
+    for address, data in store.wallets():
+        entity_type = data.get("entity_type")
+        severity = scoring.risk_severity(entity_type or "")
+        if severity is None:
+            continue
+
+        entity = data.get("label") or "Unknown entity"
+        flags.append(
+            RiskFlag(
+                address=address,
+                entity=entity,
+                risk_type=entity_type,
+                severity=severity,
+                hop_distance=data.get("depth", 0),
+                on_primary_path=address in primary_path,
+                value_received_eth=_value_received(store, address),
+                note=scoring.risk_note(entity_type, entity),
+            )
+        )
+
+    # Worst first, and within a severity the ones actually on the trail lead.
+    order = {"critical": 0, "high": 1, "medium": 2}
+    flags.sort(
+        key=lambda f: (
+            order.get(f.severity, 9),
+            not f.on_primary_path,
+            f.hop_distance,
+        )
+    )
+    return flags
 
 
 def _aggregate_by_recipient(transfers: list[Transfer], dust_threshold: float) -> dict:
@@ -477,11 +639,14 @@ def summarize(result: TraceResult) -> dict:
             "headline": (
                 f"No named exchange reached within {result.max_depth} hops. "
                 f"One collection point found {lead.hop_distance} hops away "
-                f"({lead.confidence * 100:.0f}% confidence) - UNCONFIRMED."
+                f"({lead.confidence_score}% confidence) - UNCONFIRMED."
             ),
             "address": lead.address,
             "hop_distance": lead.hop_distance,
             "confidence": round(lead.confidence, 2),
+            "confidence_score": lead.confidence_score,
+            "confidence_breakdown": lead.confidence_breakdown,
+            "confidence_components": lead.confidence_components,
             "method": lead.method,
             "value_received_eth": round(lead.value_received_eth, 6),
             "recommended_action": (
@@ -518,12 +683,15 @@ def summarize(result: TraceResult) -> dict:
         "address": nearest.address,
         "hop_distance": nearest.hop_distance,
         "confidence": round(nearest.confidence, 2),
+        "confidence_score": nearest.confidence_score,
+        "confidence_breakdown": nearest.confidence_breakdown,
+        "confidence_components": nearest.confidence_components,
         "method": nearest.method,
         "value_received_eth": round(nearest.value_received_eth, 6),
         "headline": (
             f"Funds reached {nearest.entity}, {nearest.hop_distance} "
             f"hop{'s' if nearest.hop_distance != 1 else ''} away, "
-            f"{nearest.confidence * 100:.0f}% confidence"
+            f"{nearest.confidence_score}% confidence"
         ),
         "recommended_action": (
             f"Serve a lawful data request to {nearest.entity} via SAHYOG for "
@@ -583,6 +751,7 @@ def to_json(result: TraceResult) -> dict:
         "attributions": [a.to_dict() for a in result.attributions],
         "exchanges": [a.to_dict() for a in result.exchanges],
         "flags": [a.to_dict() for a in result.flags],
+        "risk_flags": [f.to_dict() for f in result.risk_flags],
         "stats": {
             "nodes": result.graph.number_of_nodes(),
             "edges": result.graph.number_of_edges(),
@@ -594,6 +763,7 @@ def to_json(result: TraceResult) -> dict:
             "cache_hits": result.cache_hits,
             "elapsed_sec": result.elapsed_sec,
             "truncated": result.truncated,
+            "graph_backend": result.backend,
         },
         "notes": result.notes,
         "nodes": nodes,

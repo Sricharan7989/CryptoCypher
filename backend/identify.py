@@ -36,6 +36,7 @@ from dataclasses import dataclass
 import networkx as nx
 
 import config
+import graph_store
 
 # --- Tunables -----------------------------------------------------------------
 
@@ -96,19 +97,33 @@ class Identification:
 # --- Label store --------------------------------------------------------------
 
 _labels: dict[str, dict] | None = None
+_labels_mtime: float | None = None
 
 
 def load_labels(force_reload: bool = False) -> dict[str, dict]:
     """
-    Read data/labels.json into memory, once.
+    Read data/labels.json into memory, re-reading it whenever the file changes.
 
     Keys are lowercased on load so a checksummed address from any source still
     matches. Underscore-prefixed keys are documentation, not data, and JSON has
     no comment syntax - hence the convention.
+
+    WHY it watches the file's timestamp: labels are DATA, and uvicorn --reload
+    only watches code. Without this, importing new labels appears to do nothing
+    until someone thinks to restart the server - a trap that would be found
+    mid-demo rather than now. Caching on mtime keeps lookups free while making
+    an edit to labels.json take effect on the next request.
     """
-    global _labels
-    if _labels is not None and not force_reload:
+    global _labels, _labels_mtime
+
+    try:
+        mtime = config.LABELS_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+
+    if _labels is not None and not force_reload and mtime == _labels_mtime:
         return _labels
+    _labels_mtime = mtime
 
     try:
         raw = json.loads(config.LABELS_PATH.read_text(encoding="utf-8"))
@@ -164,6 +179,22 @@ def known_label_lookup(address: str) -> Identification | None:
     )
 
 
+def _as_store(graph):
+    """
+    Accept either a graph store or a bare NetworkX graph.
+
+    The tracer passes a store (Neo4j or in-memory); tests and any ad-hoc
+    analysis pass a DiGraph directly. Wrapping here means the identification
+    logic below is written once and does not care which backend produced the
+    graph - which is also what lets us prove the two backends agree.
+    """
+    if hasattr(graph, "wallet_count"):
+        return graph
+    store = graph_store.MemoryStore()
+    store._g = graph  # noqa: SLF001 - deliberate adoption of the caller's graph
+    return store
+
+
 # --- (b) Deposit-consolidation clustering — WORKS -----------------------------
 
 
@@ -206,14 +237,15 @@ def consolidation_score(address: str, graph: nx.DiGraph) -> float:
     senders chain-wide. That is the intended upgrade, and it costs one extra
     API call per candidate.
     """
-    if address not in graph:
+    store = _as_store(graph)
+    if not store.has(address):
         return 0.0
 
-    # Distinct senders. DiGraph already collapses repeat payments into one edge,
-    # so in-degree is a distinct-counterparty count by construction. Self-loops
-    # do not count - a wallet paying itself is not a third party.
-    senders = {src for src in graph.predecessors(address) if src != address}
-    fan_in = len(senders)
+    # Distinct senders. The store collapses repeat payments between the same
+    # pair into one edge, so this is a distinct-counterparty count by
+    # construction. Self-loops do not count - a wallet paying itself is not a
+    # third party, and both backends exclude them.
+    fan_in = len(store.predecessors(address))
 
     if fan_in < CONSOLIDATION_MIN_SENDERS:
         return 0.0
@@ -226,9 +258,10 @@ def consolidation_score(address: str, graph: nx.DiGraph) -> float:
 
 def consolidation_fan_in(address: str, graph: nx.DiGraph) -> int:
     """Distinct third-party senders into this address, within the traced graph."""
-    if address not in graph:
+    store = _as_store(graph)
+    if not store.has(address):
         return 0
-    return len({src for src in graph.predecessors(address) if src != address})
+    return len(store.predecessors(address))
 
 
 def adaptive_fan_in_floor(graph: nx.DiGraph, percentile: float = 0.95) -> int:
@@ -242,9 +275,10 @@ def adaptive_fan_in_floor(graph: nx.DiGraph, percentile: float = 0.95) -> int:
     which is not a finding, it is noise. Consolidation is a claim that an
     address is an OUTLIER, so the bar has to be read off the graph it sits in.
     """
-    if graph.number_of_nodes() == 0:
+    store = _as_store(graph)
+    if store.wallet_count() == 0:
         return CONSOLIDATION_FLAG_SENDERS
-    degrees = sorted(d for _, d in graph.in_degree())
+    degrees = sorted(store.in_degrees())
     index = int(percentile * (len(degrees) - 1))
     return degrees[index]
 

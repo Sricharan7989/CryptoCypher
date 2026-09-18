@@ -1,0 +1,34 @@
+# Neo4j for the money-flow graph.
+#
+# Start it with:   docker compose up -d
+# Browser UI:      http://localhost:7474   (user neo4j, password from below)
+# Bolt endpoint:   bolt://localhost:7687
+#
+# The backend treats this as OPTIONAL. If Neo4j is not reachable, the tracer
+# falls back to the in-memory NetworkX engine and produces identical results,
+# so a stopped container can never take the demo down.
+
+services:
+  neo4j:
+    image: neo4j:5.26
+    container_name: vasp-neo4j
+    ports:
+      - "7474:7474"   # HTTP / Neo4j Browser
+      - "7687:7687"   # Bolt (what the Python driver uses)
+    environment:
+      # Demo credentials. Real deployments must not use these - they exist so a
+      # teammate can `docker compose up -d` and have a working graph instantly.
+      NEO4J_AUTH: neo4j/vasptrace2026
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  neo4j-data:

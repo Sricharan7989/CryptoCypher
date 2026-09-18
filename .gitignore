@@ -21,3 +21,9 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Recorded demo traces (data/cache/) are deliberately NOT ignored. They are what
+# makes the demo work instantly on any machine without a live API call, so a
+# teammate who clones the repo gets a working demo. ~1 MB total.
+# Uncomment to exclude them:
+# data/cache/

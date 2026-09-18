@@ -1,8 +1,12 @@
 // Talks to the FastAPI backend. Requests go through Vite's /api proxy, so no
 // host is hardcoded here and the API key never comes near the browser.
 
-export async function runTrace(address, { maxDepth = 4 } = {}) {
-  const query = new URLSearchParams({ address, max_depth: String(maxDepth) })
+export async function runTrace(address, { maxDepth = 4, mode = 'auto' } = {}) {
+  const query = new URLSearchParams({
+    address,
+    max_depth: String(maxDepth),
+    mode,
+  })
   const response = await fetch(`/api/trace?${query}`)
 
   if (!response.ok) {
@@ -20,4 +24,29 @@ export async function runTrace(address, { maxDepth = 4 } = {}) {
   }
 
   return response.json()
+}
+
+/** Recorded traces the backend can replay instantly. Used for the demo picker. */
+export async function listDemos() {
+  try {
+    const response = await fetch('/api/demos')
+    if (!response.ok) return []
+    const body = await response.json()
+    return body.demos ?? []
+  } catch {
+    // The demo list is a convenience; never let it break the app.
+    return []
+  }
+}
+
+/**
+ * URL of the PDF report for a trace.
+ *
+ * A plain link rather than a fetch-and-blob: the backend already sends
+ * Content-Disposition with a filed-ready filename, so the browser's own
+ * download handling gives the investigator the right name for free.
+ */
+export function reportUrl(address, { maxDepth = 4 } = {}) {
+  const query = new URLSearchParams({ address, max_depth: String(maxDepth) })
+  return `/api/report?${query}`
 }

@@ -265,3 +265,96 @@ body {
   .search input { width: 100%; }
   .search { flex: 1; }
 }
+
+/* --- Score breakdown (expandable) ------------------------------------- */
+
+.why {
+  margin-left: auto; background: none; border: none; padding: 0;
+  color: var(--accent); font-size: 11.5px; font-weight: 600;
+  cursor: pointer; text-decoration: underline; font-family: inherit;
+}
+.why:hover { color: #1e40af; }
+
+.score-detail {
+  margin-top: 11px; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px;
+}
+.score-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.score-table td { padding: 3px 0; color: var(--ink-soft); vertical-align: top; }
+.score-table td.pts {
+  text-align: right; width: 54px; font-weight: 700;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+.pts-pos { color: var(--good); }
+.pts-neg { color: var(--danger); }
+.score-total td {
+  border-top: 1px solid var(--line); padding-top: 7px;
+  font-weight: 700; color: var(--ink);
+}
+.score-note { margin: 9px 0 0; font-size: 11px; color: var(--ink-faint); }
+
+/* --- Risk flag severity ----------------------------------------------- */
+
+.flag-sev {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; padding: 1px 6px; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.07);
+}
+.flag-meta { font-size: 11.5px; color: var(--ink-faint); margin-top: 5px; }
+.flags-sub { font-size: 11.5px; color: var(--ink-faint); margin: 13px 0 7px; }
+.flags-muted { opacity: 0.72; }
+
+.flag.sev-critical { background: #fef2f2; border-color: #fecaca; }
+.flag.sev-critical .flag-icon { background: var(--danger); }
+.flag.sev-critical .flag-name, .flag.sev-critical .flag-note { color: #991b1b; }
+
+.flag.sev-medium { background: #f5f3ff; border-color: #ddd6fe; }
+.flag.sev-medium .flag-icon { background: #7c3aed; }
+.flag.sev-medium .flag-name, .flag.sev-medium .flag-note { color: #5b21b6; }
+
+/* --- Demo bar & replay -------------------------------------------------- */
+
+.demobar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 20px; background: #eef2ff;
+  border-bottom: 1px solid #c7d2fe;
+}
+.demobar-label {
+  font-size: 11.5px; font-weight: 600; color: #3730a3;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.demo-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border: 1px solid #c7d2fe; border-radius: 20px;
+  background: var(--paper); color: #3730a3;
+  font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.demo-chip:hover:not(:disabled) { background: #e0e7ff; border-color: #a5b4fc; }
+.demo-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.demo-addr {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 10.5px; font-weight: 400; color: var(--ink-faint);
+}
+
+.live-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--ink-soft); cursor: pointer; user-select: none;
+}
+.live-toggle input { cursor: pointer; margin: 0; }
+
+.source-badge {
+  display: inline-block; margin-bottom: 9px;
+  padding: 3px 9px; border-radius: 5px;
+  background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe;
+  font-size: 10.5px; font-weight: 600;
+}
+
+/* --- Download report ---------------------------------------------------- */
+
+.download {
+  display: block; width: 100%; padding: 10px;
+  border: 1px solid var(--accent); border-radius: 7px;
+  background: var(--paper); color: var(--accent);
+  font-size: 13.5px; font-weight: 600; text-align: center; text-decoration: none;
+}
+.download:hover { background: #eff6ff; }

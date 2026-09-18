@@ -43,6 +43,26 @@ ETHERSCAN_CHAIN_ID = 1  # 1 = Ethereum mainnet
 # exchange identification — the known-label lookup — reads from here.
 LABELS_PATH = DATA_DIR / "labels.json"
 
+# --- Graph store (optional) ---------------------------------------------------
+
+# Neo4j holds the money-flow graph and answers the traversal queries (shortest
+# path, fan-in). It is deliberately OPTIONAL: when it cannot be reached the
+# tracer uses its in-memory NetworkX engine instead and returns the same answer.
+# A graph database is a good story for scale and cross-case link analysis, but it
+# must never be something that can take a live demo down.
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "vasptrace2026")
+
+# Seconds to wait for a Neo4j connection before giving up and using memory.
+# Short on purpose: a slow database must not become a slow trace.
+NEO4J_CONNECT_TIMEOUT = 4.0
+
+# Set NEO4J_DISABLED=1 to force the in-memory engine (useful for tests and for
+# proving on stage that the tool still works with the database switched off).
+NEO4J_DISABLED = os.getenv("NEO4J_DISABLED", "").strip() not in ("", "0", "false", "False")
+
+
 # --- Tracing guard-rails ------------------------------------------------------
 
 # How many hops forward from the suspect address we follow. 4 is the sweet spot:
