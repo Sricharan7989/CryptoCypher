@@ -65,11 +65,10 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 
-import config
-import graph_store
-import identify
-import scoring
-from etherscan import EtherscanClient, Transfer, get_client, normalize_address
+from app import config
+from core import identify, scoring
+from services import graph_store
+from services.etherscan import EtherscanClient, Transfer, get_client, normalize_address
 
 
 @dataclass

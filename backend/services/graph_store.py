@@ -41,7 +41,7 @@ import uuid
 
 import networkx as nx
 
-import config
+from app import config
 
 log = logging.getLogger(__name__)
 

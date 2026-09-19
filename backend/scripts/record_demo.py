@@ -3,23 +3,23 @@ Record a trace to data/cache/ so the demo replays instantly.
 
 Run this once, on a good connection, before the presentation:
 
-    python record_demo.py 0x62425cd6bdcb6bfe51558ea465b063486b70dc9f --depth 3
+    python -m scripts.record_demo 0x62425cd6bdcb6bfe51558ea465b063486b70dc9f --depth 3
 
 Afterwards /trace and /report serve that address from disk in milliseconds,
 with no network call at all. Any address that has NOT been recorded still runs
 live, so a fresh trace on a second address remains part of the demo.
 
-    python record_demo.py --list      show what is recorded
-    python record_demo.py --clear ADDR  remove one recording
+    python -m scripts.record_demo --list      show what is recorded
+    python -m scripts.record_demo --clear ADDR  remove one recording
 """
 
 import argparse
 import asyncio
 import sys
 
-import replay
-import tracer
-from etherscan import is_valid_address
+from core import tracer
+from services import replay
+from services.etherscan import is_valid_address
 
 
 async def record(address: str, depth: int, dust: float) -> int:

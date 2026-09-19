@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import config
+from app import config
 
 CACHE_DIR = config.DATA_DIR / "cache"
 

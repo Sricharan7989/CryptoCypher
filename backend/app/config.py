@@ -19,7 +19,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Resolve paths relative to this file so the app runs from any working directory.
-BACKEND_DIR = Path(__file__).resolve().parent
+# app/config.py → app/ → backend/
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BACKEND_DIR.parent
 DATA_DIR = PROJECT_ROOT / "data"
 

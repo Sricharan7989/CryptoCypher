@@ -1,9 +1,9 @@
 """
 Import address labels from the GraphSense TagPacks into data/labels.json.
 
-    python import_tagpacks.py            # fetch, filter, verify on-chain, merge
-    python import_tagpacks.py --dry-run  # show what would change, write nothing
-    python import_tagpacks.py --no-verify  # skip the on-chain check (faster, riskier)
+    python -m scripts.import_tagpacks            # fetch, filter, verify on-chain, merge
+    python -m scripts.import_tagpacks --dry-run  # show what would change, write nothing
+    python -m scripts.import_tagpacks --no-verify  # skip the on-chain check (faster, riskier)
 
 WHY THIS IS NOT A STRAIGHT COPY
 -------------------------------
@@ -49,7 +49,7 @@ import urllib.request
 import httpx
 import yaml
 
-import config
+from app import config
 
 GITHUB_API = (
     "https://api.github.com/repos/graphsense/graphsense-tagpacks/contents/packs/"

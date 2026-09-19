@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import httpx
 
-import config
+from app import config
 
 # Ethereum addresses are 20 bytes / 40 hex chars, plus the "0x" prefix.
 # Etherscan returns them EIP-55 checksummed (mixed case) but treats them

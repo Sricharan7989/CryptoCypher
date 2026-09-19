@@ -35,8 +35,8 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-import config
-import graph_store
+from app import config
+from services import graph_store
 
 # --- Tunables -----------------------------------------------------------------
 
